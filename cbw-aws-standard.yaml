@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deployment on the entire organization
+
+Parameters:
+  CyberwatchNameSuffix:
+    Type: String
+    Description: (Optional) Add a suffix to every resource name. This is helpful in the event you are deploying multiple instances of the same stack
+    Default: ""
+
+  DeploymentType:
+    Type: String
+    Description: Enable org deploy
+    AllowedValues:
+      - Organization
+      - Account
+    Default: Organization
+
+  OUList:
+    Type: CommaDelimitedList
+    Description: The OU ID of the AWS Organization where we should deploy, preferably the root OU. You can submit one value, or a space separated list of multiple OUs
+
+Conditions:
+  orgEnabled: !Equals 
+    - !Ref DeploymentType
+    - Organization
+
+Resources:
+  # IAM User
+  CyberwatchAuditUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub 'CyberwatchAuditorUser${CyberwatchNameSuffix}'
+
+  # Access key for the user
+  CyberwatchAuditUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    DependsOn: CyberwatchAuditUser
+    Properties:
+      UserName: !Ref CyberwatchAuditUser
+
+  # Policy to allow access key rotation
+  CyberwatchAuditUserRotateKeysPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn: CyberwatchAuditUser
+    Properties:
+      PolicyName: !Sub 'CyberwatchAuditUserRotateKeysPolicy${CyberwatchNameSuffix}'
+      Users:
+        - !Ref CyberwatchAuditUser
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:ListAccessKeys
+              - iam:UpdateAccessKey
+              - iam:DeleteAccessKey
+              - iam:CreateAccessKey
+            Resource: !GetAtt CyberwatchAuditUser.Arn
+
+  # IAM Role with SecurityAudit and ViewOnlyAccess
+  CyberwatchAuditRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'CyberwatchAuditorRole${CyberwatchNameSuffix}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt CyberwatchAuditUser.Arn
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/SecurityAudit
+        - arn:aws:iam::aws:policy/job-function/ViewOnlyAccess
+
+  # Policy that allows the user to assume the role on any accounts
+  CyberwatchAuditUserAssumeRolePolicy:
+    Type: AWS::IAM::Policy
+    DependsOn: CyberwatchAuditUser
+    Properties:
+      PolicyName: !Sub 'CyberwatchAuditUserAssumeRolePolicy${CyberwatchNameSuffix}'
+      Users:
+        - !Ref CyberwatchAuditUser
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Sub arn:aws:iam::*:role/CyberwatchAuditorRole${CyberwatchNameSuffix}
+
+  CyberwatchAuditorRoleStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Condition: orgEnabled
+    Properties:
+      AutoDeployment:
+        Enabled: true
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+      Description: Cyberwatch AWS standard deployment on target OUs
+      ManagedExecution:
+        Active: true
+      OperationPreferences:
+        FailureTolerancePercentage: 50
+        MaxConcurrentPercentage: 50
+        RegionConcurrencyType: PARALLEL
+      Parameters:
+        - ParameterKey: CyberwatchNameSuffix
+          ParameterValue: !Ref CyberwatchNameSuffix
+        - ParameterKey: CyberwatchUserArn
+          ParameterValue: !GetAtt CyberwatchAuditUser.Arn
+      PermissionModel: SERVICE_MANAGED
+      StackInstancesGroup:
+        - DeploymentTargets:
+            OrganizationalUnitIds: !Ref OUList
+          Regions:
+            - eu-central-1
+      StackSetName: !Sub 'CyberwatchAuditorRoleStackSet${CyberwatchNameSuffix}'
+      TemplateURL: https://cyberwatch-public.s3.eu-central-1.amazonaws.com/aws-deployment/cbw-aws-stackset.yaml
+
+Outputs:
+  CyberwatchOutput:
+    Description: Value to copy in Cyberwatch. The access key is temporary and will be deleted soon after. 
+    Value: !Sub |
+      {
+        "assume_role_name": "CyberwatchAuditorRole${CyberwatchNameSuffix}",
+        "access_key_id": "${CyberwatchAuditUserAccessKey}",
+        "secret_access_key": "${CyberwatchAuditUserAccessKey.SecretAccessKey}"
+      }
+
+

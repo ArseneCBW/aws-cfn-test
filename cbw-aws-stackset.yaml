@@ -1,0 +1,32 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: StackSet template for deployment on target accounts
+
+Parameters:
+  CyberwatchNameSuffix:
+    Type: String
+    Description: (Optional) Add a suffix to every resource name. This is helpful in the event you are deploying multiple instances of the same stack
+    Default: ""
+
+  CyberwatchUserArn:
+    Type: String
+    Description: ARN of the Cyberwatch User
+
+Resources:
+  CyberwatchAuditorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'CyberwatchAuditorRole${CyberwatchNameSuffix}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref CyberwatchUserArn
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/SecurityAudit
+
+Outputs:
+  RoleToAssume:
+    Description: IAM Role the user can assume
+    Value: !GetAtt CyberwatchAuditorRole.Arn
